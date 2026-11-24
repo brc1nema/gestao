@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Gestão Brcinema</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" type="image/png" href="icon-192.png">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Brcinema">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="theme-color" content="#018EC4">
+<meta name="robots" content="noindex,nofollow">
+<style>
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;background:#f8fafc;color:#0f172a;-webkit-text-size-adjust:100%}
+  .tela{min-height:100%;display:flex;align-items:center;justify-content:center;padding:24px}
+  .cartao{width:100%;max-width:380px;background:#fff;border:1px solid #e2e8f0;border-radius:24px;padding:32px 28px;text-align:center;box-shadow:0 10px 30px rgba(15,23,42,.06)}
+  .logo{width:76px;height:76px;border-radius:18px;margin:0 auto 18px;display:block;box-shadow:0 6px 16px rgba(1,142,196,.3)}
+  h1{font-size:20px;margin:0 0 4px;letter-spacing:-.01em}
+  p{margin:0;color:#64748b;font-size:14px;line-height:1.45}
+  input{width:100%;margin-top:22px;padding:14px 12px;font-size:17px;letter-spacing:.06em;text-align:center;text-transform:uppercase;border:1.5px solid #cbd5e1;border-radius:14px;background:#f8fafc;color:#0f172a;outline:none;font-family:ui-monospace,Menlo,Consolas,monospace}
+  input:focus{border-color:#018EC4;background:#fff}
+  button{width:100%;margin-top:12px;padding:14px;font-size:16px;font-weight:700;color:#fff;background:#018EC4;border:0;border-radius:14px;cursor:pointer}
+  button:disabled{opacity:.6;cursor:default}
+  .erro{margin-top:14px;color:#b91c1c;font-size:13px;font-weight:600;min-height:18px}
+  .peq{margin-top:18px;font-size:12px;color:#94a3b8}
+  .giro{width:26px;height:26px;border:3px solid #e2e8f0;border-top-color:#018EC4;border-radius:50%;margin:18px auto 0;animation:g 0.8s linear infinite}
+  @keyframes g{to{transform:rotate(1turn)}}
+  #faixa-offline{position:fixed;left:0;right:0;top:0;z-index:99999;background:#92400e;color:#fff;font:600 13px/1.3 -apple-system,Arial,sans-serif;text-align:center;padding:8px 12px}
+</style>
+</head>
+<body>
+<div class="tela"><div class="cartao" id="cartao"></div></div>
+<script src="config.js"></script>
+<script>
+(function () {
+  'use strict';
+  var LS = 'brc_chave', CACHE = 'brc-dados';
+  var cartao = document.getElementById('cartao');
+  var LOGO = '<img class="logo" src="icon-192.png" alt="BRC">';
+
+  function url() { var u = String(window.BRC_PONTE || ''); return /^https:\/\/script\.google\.com\/.+\/exec$/.test(u) || /^https?:\/\/(localhost|127\.0\.0\.1)/.test(u) ? u : ''; }
+  function chaveGuardada() { try { return localStorage.getItem(LS) || ''; } catch (e) { return ''; } }
+  function guardarChave(c) { try { localStorage.setItem(LS, c); } catch (e) {} }
+  function esquecerChave() { try { localStorage.removeItem(LS); } catch (e) {} }
+
+  // ---------- conversa com a ponte (Apps Script) ----------
+  function chamar(chave, fn, args, extra, ms) {
+    var ctl = ('AbortController' in window) ? new AbortController() : null;
+    var timer = ctl ? setTimeout(function () { ctl.abort(); }, ms || 60000) : null;
+    var corpo = Object.assign({ chave: chave, fn: fn, args: args || [] }, extra || {});
+    return fetch(url(), { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify(corpo), signal: ctl ? ctl.signal : undefined })
+      .then(function (r) { if (!r.ok) throw new Error('Servidor respondeu ' + r.status); return r.json(); })
+      .then(function (o) { if (timer) clearTimeout(timer); return o; }, function (e) { if (timer) clearTimeout(timer); throw e; });
+  }
+
+  // ---------- no lugar do google.script.run do Google ----------
+  function instalarShim(chave) {
+    function criar() {
+      var ok = function () {}, err = function () {};
+      var p = new Proxy({}, { get: function (_, nome) {
+        if (nome === 'withSuccessHandler') return function (f) { ok = f; return p; };
+        if (nome === 'withFailureHandler') return function (f) { err = f; return p; };
+        return function () {
+          var args = Array.prototype.slice.call(arguments);
+          chamar(chave, String(nome), args, null, 180000).then(function (o) {
+            if (o && o.ok) ok(o.res);
+            else if (o && (o.erro === 'chave')) { esquecerChave(); err(new Error('Chave não vale mais. Entre de novo.')); setTimeout(function () { location.reload(); }, 1200); }
+            else err(new Error((o && (o.msg || o.erro)) || 'Erro no servidor'));
+          }, function (e) { err(new Error(e && e.name === 'AbortError' ? 'A internet demorou demais.' : 'Sem conexão com a internet.')); });
+          return p;
+        };
+      } });
+      return p;
+    }
+    window.google = { script: { get run() { return criar(); } } };
+  }
+
+  // ---------- cópia local (para abrir sem internet) ----------
+  function guardarLocal(appV, app, payload) {
+    if (!('caches' in window)) return Promise.resolve();
+    return caches.open(CACHE).then(function (c) {
+      return Promise.all([c.put('/__appv', new Response(appV)), c.put('/__app', new Response(app)), c.put('/__payload', new Response(JSON.stringify(payload)))]);
+    }).catch(function () {});
+  }
+  function lerLocal() {
+    if (!('caches' in window)) return Promise.resolve(null);
+    return caches.open(CACHE).then(function (c) {
+      return Promise.all([c.match('/__appv'), c.match('/__app'), c.match('/__payload')]).then(function (rs) {
+        if (!rs[0] || !rs[1] || !rs[2]) return null;
+        return Promise.all([rs[0].text(), rs[1].text(), rs[2].json()]).then(function (v) { return { appV: v[0], app: v[1], payload: v[2] }; });
+      });
+    }).catch(function () { return null; });
+  }
+  function lerSoVersao() { if (!('caches' in window)) return Promise.resolve(''); return caches.open(CACHE).then(function (c) { return c.match('/__appv'); }).then(function (r) { return r ? r.text() : ''; }).catch(function () { return ''; }); }
+  function limparLocal() { try { if ('caches' in window) caches.delete(CACHE); } catch (e) {} }
+
+  // ---------- abrir o sistema ----------
+  function iniciar(app, payload, offline) {
+    var chave = chaveGuardada();
+    instalarShim(chave);
+    window.__DRIVE__ = payload;
+    window.__BRC_SHELL = { sair: sair, offline: !!offline };
+    var cabeca = '<link rel="manifest" href="manifest.webmanifest"><link rel="apple-touch-icon" href="apple-touch-icon.png">'
+      + '<meta name="apple-mobile-web-app-capable" content="yes"><meta name="mobile-web-app-capable" content="yes">'
+      + '<meta name="apple-mobile-web-app-title" content="Brcinema"><meta name="apple-mobile-web-app-status-bar-style" content="default">'
+      + '<meta name="theme-color" content="#018EC4">';
+    var html = app.replace(/<head([^>]*)>/i, function (m) { return m + cabeca; });
+    document.open('text/html', 'replace');
+    document.write(html);
+    document.close();
+    if (offline) setTimeout(function () {
+      try {
+        var f = document.createElement('div'); f.id = 'faixa-offline';
+        f.style.cssText = 'position:fixed;left:0;right:0;top:0;z-index:99999;background:#92400e;color:#fff;font:600 13px/1.3 -apple-system,Arial,sans-serif;text-align:center;padding:8px 12px';
+        f.textContent = 'Sem internet: mostrando a última cópia salva. Mudanças novas podem não ser enviadas.';
+        document.body.appendChild(f); setTimeout(function () { f.remove(); }, 9000);
+      } catch (e) {}
+    }, 800);
+  }
+
+  function sair() {
+    if (!confirm('Sair deste aparelho? Vai precisar digitar a chave de novo.')) return;
+    esquecerChave(); limparLocal();
+    location.reload();
+  }
+
+  function abrir() {
+    var chave = chaveGuardada();
+    mostrarAbrindo();
+    lerSoVersao().then(function (appV) {
+      return chamar(chave, '__abrir', [], { appV: appV }, 45000).then(function (o) {
+        if (o && o.ok) {
+          if (o.app) return guardarLocal(o.appV, o.app, o.payload).then(function () { iniciar(o.app, o.payload, false); });
+          return lerLocal().then(function (loc) {
+            if (loc && loc.appV === o.appV) { guardarLocal(o.appV, loc.app, o.payload); iniciar(loc.app, o.payload, false); }
+            else return chamar(chave, '__abrir', [], { appV: '' }, 60000).then(function (o2) { if (!(o2 && o2.ok && o2.app)) throw new Error((o2 && (o2.msg || o2.erro)) || 'Erro'); return guardarLocal(o2.appV, o2.app, o2.payload).then(function () { iniciar(o2.app, o2.payload, false); }); });
+          });
+        }
+        if (o && (o.erro === 'chave' || o.erro === 'bloqueado')) { if (o.erro === 'chave') { esquecerChave(); limparLocal(); } return mostrarLogin(o.erro === 'chave' ? 'Essa chave não vale mais. Digite a nova chave.' : o.msg); }
+        throw new Error((o && (o.msg || o.erro)) || 'Erro no servidor');
+      });
+    }).catch(function (e) {
+      lerLocal().then(function (loc) {
+        if (loc) iniciar(loc.app, loc.payload, true);
+        else mostrarFalha('Não consegui abrir agora. Confira a internet e tente de novo.' + (e && e.message ? '\n(' + e.message + ')' : ''));
+      });
+    });
+  }
+
+  // ---------- telas ----------
+  function mostrarAbrindo() { cartao.innerHTML = LOGO + '<h1>Gestão Brcinema</h1><p>Abrindo…</p><div class="giro"></div>'; }
+  function mostrarFalha(msg) {
+    cartao.innerHTML = LOGO + '<h1>Gestão Brcinema</h1><p style="white-space:pre-line"></p><button id="b-de-novo">Tentar de novo</button>';
+    cartao.querySelector('p').textContent = msg;
+    document.getElementById('b-de-novo').onclick = abrir;
+  }
+  function formatar(v) { v = String(v || '').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 16); return v.replace(/(.{4})(?=.)/g, '$1-'); }
+  function mostrarLogin(aviso) {
+    if (!url()) { mostrarFalha('O app ainda não foi ligado ao Google (falta colar o link no arquivo config.js).'); return; }
+    cartao.innerHTML = LOGO + '<h1>Gestão Brcinema</h1><p>Digite a sua chave de acesso</p>'
+      + '<input id="chave" autocomplete="off" autocapitalize="characters" autocorrect="off" spellcheck="false" inputmode="text" placeholder="XXXX-XXXX-XXXX-XXXX">'
+      + '<button id="entrar">Entrar</button><div class="erro" id="erro"></div><div class="peq">Não tem a chave? Peça para a Caroline.</div>';
+    var inp = document.getElementById('chave'), bt = document.getElementById('entrar'), er = document.getElementById('erro');
+    if (aviso) er.textContent = aviso;
+    inp.addEventListener('input', function () { inp.value = formatar(inp.value); });
+    function entrar() {
+      var c = formatar(inp.value);
+      if (c.replace(/-/g, '').length !== 16) { er.textContent = 'A chave tem 16 letras e números.'; return; }
+      bt.disabled = true; er.textContent = ''; bt.textContent = 'Conferindo…';
+      chamar(c, '__oi', [], null, 30000).then(function (o) {
+        if (o && o.ok) { guardarChave(c); abrir(); return; }
+        er.textContent = (o && o.msg) || 'Chave incorreta.'; bt.disabled = false; bt.textContent = 'Entrar';
+      }, function () { er.textContent = 'Sem conexão. Confira a internet.'; bt.disabled = false; bt.textContent = 'Entrar'; });
+    }
+    bt.onclick = entrar;
+    inp.addEventListener('keydown', function (e) { if (e.key === 'Enter') entrar(); });
+    setTimeout(function () { inp.focus(); }, 100);
+  }
+
+  // ---------- começo ----------
+  if ('serviceWorker' in navigator && /^https:|^http:\/\/localhost/.test(location.protocol + '//' + location.hostname) ) { try { navigator.serviceWorker.register('sw.js'); } catch (e) {} }
+  if (chaveGuardada()) abrir(); else mostrarLogin();
+})();
+</script>
+</body>
+</html>
